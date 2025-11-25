@@ -1,0 +1,677 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>多人德州扑克 Demo</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+            background: #0b1724;
+            color: #ecf0f1;
+            padding: 16px;
+        }
+
+        .app {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        #controlPanel {
+            background: #1c2833;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 12px;
+            font-size: 14px;
+        }
+
+        #controlPanel .row {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px 12px;
+            margin-bottom: 6px;
+        }
+
+        label {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        input[type="text"] {
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid #34495e;
+            background: #111820;
+            color: #ecf0f1;
+        }
+
+        button {
+            padding: 6px 10px;
+            border-radius: 4px;
+            border: 1px solid #34495e;
+            background: #273746;
+            color: #ecf0f1;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #statusText {
+            margin-right: auto;
+        }
+
+        #table {
+            background: radial-gradient(circle at center, #145a32 0, #0b3d22 60%, #041810 100%);
+            border-radius: 16px;
+            padding: 16px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            margin-bottom: 12px;
+        }
+
+        #community {
+            display: flex;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 16px;
+            min-height: 90px;
+        }
+
+        #players {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 10px;
+        }
+
+        .player {
+            background: rgba(12, 20, 28, 0.9);
+            border-radius: 10px;
+            padding: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .player.folded {
+            opacity: 0.5;
+        }
+
+        .player.winner {
+            border-color: #f1c40f;
+            box-shadow: 0 0 10px rgba(241, 196, 15, 0.6);
+        }
+
+        .player-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+            font-size: 13px;
+        }
+
+        .player-header span:first-child {
+            font-weight: 600;
+        }
+
+        .hand {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 4px;
+        }
+
+        .card {
+            width: 40px;
+            height: 60px;
+            border-radius: 6px;
+            background: #fdfdfd;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 18px;
+            border: 1px solid #bdc3c7;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+
+        .card.red {
+            color: #c0392b;
+        }
+
+        .card.black {
+            color: #2c3e50;
+        }
+
+        .card.back {
+            background: #2c3e50;
+            color: #ecf0f1;
+        }
+
+        .result {
+            font-size: 12px;
+            color: #f1c40f;
+        }
+
+        #log {
+            max-height: 180px;
+            overflow-y: auto;
+            padding: 8px 10px;
+            background: #1b2631;
+            border-radius: 8px;
+            font-size: 12px;
+        }
+
+        #log div+div {
+            margin-top: 3px;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="app">
+        <h1>多人德州扑克 Demo</h1>
+
+        <section id="controlPanel">
+            <div class="row">
+                <label>
+                    你的昵称：
+                    <input id="nameInput" type="text" placeholder="比如：小明" />
+                </label>
+                <button id="joinBtn">加入房间</button>
+                <button id="readyBtn" disabled>准备</button>
+                <button id="foldBtn" disabled>弃牌</button>
+                <button id="nextStageBtn" disabled>下一阶段</button>
+                <button id="resetBtn" disabled>重置牌局</button>
+            </div>
+            <div class="row">
+                <span id="statusText">尚未连接</span>
+                <span id="stageText">阶段：未知</span>
+                <span id="playerCountText">当前玩家数：0</span>
+                <span id="hostHint"></span>
+            </div>
+        </section>
+
+        <section id="table">
+            <div id="community"></div>
+            <div id="players"></div>
+        </section>
+
+        <section id="log"></section>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+
+        const STAGE_LABELS = {
+            idle: "未开始",
+            preflop: "翻牌前（已发底牌）",
+            flop: "翻牌",
+            turn: "转牌",
+            river: "河牌",
+            showdown: "摊牌",
+        };
+
+        const HAND_NAMES = {
+            0: "高牌",
+            1: "一对",
+            2: "两对",
+            3: "三条",
+            4: "顺子",
+            5: "同花",
+            6: "葫芦",
+            7: "四条",
+            8: "同花顺",
+        };
+
+        const statusText = document.getElementById("statusText");
+        const stageText = document.getElementById("stageText");
+        const playerCountText = document.getElementById("playerCountText");
+        const hostHint = document.getElementById("hostHint");
+        const logDiv = document.getElementById("log");
+        const nameInput = document.getElementById("nameInput");
+        const joinBtn = document.getElementById("joinBtn");
+        const readyBtn = document.getElementById("readyBtn");
+        const foldBtn = document.getElementById("foldBtn");
+        const nextStageBtn = document.getElementById("nextStageBtn");
+        const resetBtn = document.getElementById("resetBtn");
+
+        let gameState = {
+            stage: "idle",
+            communityCards: [],
+            hostId: null,
+            playerCount: 0,
+            you: null,
+            others: [],
+        };
+
+        let hasJoined = false;
+
+        // ====== 辅助函数：牌显示 & 牌型评估 ======
+        function createCardElement(card) {
+            const div = document.createElement("div");
+            if (!card) {
+                div.className = "card back";
+                div.textContent = "?";
+                return div;
+            }
+            const isRed = card.suit === "♥" || card.suit === "♦";
+            div.className = "card " + (isRed ? "red" : "black");
+            const rankMap = { 11: "J", 12: "Q", 13: "K", 14: "A" };
+            const r = rankMap[card.rank] || card.rank;
+            div.textContent = r + card.suit;
+            return div;
+        }
+
+        function compareScores(a, b) {
+            const len = Math.max(a.length, b.length);
+            for (let i = 0; i < len; i++) {
+                const av = a[i] ?? 0;
+                const bv = b[i] ?? 0;
+                if (av !== bv) return av - bv;
+            }
+            return 0;
+        }
+
+        function describeHand(score) {
+            if (!score) return "未知牌型";
+            const category = score[0];
+            if (category === 8 && score[1] === 14) {
+                return "皇家同花顺";
+            }
+            return HAND_NAMES[category] || "未知牌型";
+        }
+
+        function evaluate5Cards(cards) {
+            const ranks = cards.map((c) => c.rank);
+            const suits = cards.map((c) => c.suit);
+            const rankCount = {};
+            for (const r of ranks) {
+                rankCount[r] = (rankCount[r] || 0) + 1;
+            }
+            const counts = Object.values(rankCount).sort((a, b) => b - a);
+            const isFlush = new Set(suits).size === 1;
+
+            const uniqueRanks = [...new Set(ranks)].sort((a, b) => b - a);
+            let straightHigh = null;
+
+            if (uniqueRanks.length === 5) {
+                if (uniqueRanks[0] - uniqueRanks[4] === 4) {
+                    straightHigh = uniqueRanks[0];
+                } else {
+                    const set = new Set(uniqueRanks);
+                    if (
+                        set.has(14) &&
+                        set.has(2) &&
+                        set.has(3) &&
+                        set.has(4) &&
+                        set.has(5)
+                    ) {
+                        straightHigh = 5; // A2345
+                    }
+                }
+            }
+
+            const isStraight = straightHigh !== null;
+            const score = [];
+            const rankKeys = Object.keys(rankCount).map(Number);
+
+            // 同花顺
+            if (isFlush && isStraight) {
+                score.push(8, straightHigh);
+                return score;
+            }
+
+            // 四条
+            if (counts[0] === 4) {
+                let fourRank = null;
+                let kicker = null;
+                for (const r of rankKeys) {
+                    if (rankCount[r] === 4) fourRank = r;
+                    else if (rankCount[r] === 1) kicker = r;
+                }
+                score.push(7, fourRank, kicker);
+                return score;
+            }
+
+            // 葫芦
+            if (counts[0] === 3 && counts[1] === 2) {
+                let tripRank = null;
+                let pairRank = null;
+                for (const r of rankKeys) {
+                    if (rankCount[r] === 3) tripRank = r;
+                    else if (rankCount[r] === 2) pairRank = r;
+                }
+                score.push(6, tripRank, pairRank);
+                return score;
+            }
+
+            // 同花
+            if (isFlush) {
+                const sortedRanks = ranks.slice().sort((a, b) => b - a);
+                score.push(5, ...sortedRanks);
+                return score;
+            }
+
+            // 顺子
+            if (isStraight) {
+                score.push(4, straightHigh);
+                return score;
+            }
+
+            // 三条
+            if (counts[0] === 3) {
+                let tripRank = null;
+                const kickers = [];
+                for (const r of rankKeys) {
+                    if (rankCount[r] === 3) tripRank = r;
+                    else kickers.push(r);
+                }
+                kickers.sort((a, b) => b - a);
+                score.push(3, tripRank, ...kickers);
+                return score;
+            }
+
+            // 两对
+            if (counts[0] === 2 && counts[1] === 2) {
+                const pairs = [];
+                let kicker = null;
+                for (const r of rankKeys) {
+                    if (rankCount[r] === 2) pairs.push(r);
+                    else if (rankCount[r] === 1) kicker = r;
+                }
+                pairs.sort((a, b) => b - a);
+                score.push(2, pairs[0], pairs[1], kicker);
+                return score;
+            }
+
+            // 一对
+            if (counts[0] === 2) {
+                let pairRank = null;
+                const kickers = [];
+                for (const r of rankKeys) {
+                    if (rankCount[r] === 2) pairRank = r;
+                    else kickers.push(r);
+                }
+                kickers.sort((a, b) => b - a);
+                score.push(1, pairRank, ...kickers);
+                return score;
+            }
+
+            // 高牌
+            const sortedRanks = ranks.slice().sort((a, b) => b - a);
+            score.push(0, ...sortedRanks);
+            return score;
+        }
+
+        function evaluate7Cards(cards) {
+            let bestScore = null;
+            let bestHand = null;
+
+            function dfs(startIndex, chosenIndices) {
+                if (chosenIndices.length === 5) {
+                    const subset = chosenIndices.map((idx) => cards[idx]);
+                    const score = evaluate5Cards(subset);
+                    if (!bestScore || compareScores(score, bestScore) > 0) {
+                        bestScore = score;
+                        bestHand = subset;
+                    }
+                    return;
+                }
+                for (let i = startIndex; i < cards.length; i++) {
+                    chosenIndices.push(i);
+                    dfs(i + 1, chosenIndices);
+                    chosenIndices.pop();
+                }
+            }
+
+            dfs(0, []);
+            return { score: bestScore, hand: bestHand };
+        }
+
+        // ====== 日志 ======
+        function appendLog(msg) {
+            const div = document.createElement("div");
+            div.textContent = msg;
+            logDiv.appendChild(div);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // ====== 渲染 ======
+        function renderCommunity() {
+            const container = document.getElementById("community");
+            container.innerHTML = "";
+            for (const card of gameState.communityCards || []) {
+                container.appendChild(createCardElement(card));
+            }
+        }
+
+        function renderPlayers() {
+            const container = document.getElementById("players");
+            container.innerHTML = "";
+
+            const isShowdown = gameState.stage === "showdown";
+
+            const list = [];
+            if (gameState.you) {
+                list.push({ ...gameState.you, isYou: true });
+            }
+            for (const o of gameState.others || []) {
+                list.push({ ...o, isYou: false });
+            }
+
+            let winnerIds = new Set();
+
+            if (isShowdown) {
+                let bestScore = null;
+                const active = list.filter(
+                    (p) =>
+                        !p.folded &&
+                        Array.isArray(p.holeCards) &&
+                        p.holeCards.length === 2 &&
+                        gameState.communityCards.length >= 5
+                );
+
+                for (const p of active) {
+                    const cards = p.holeCards.concat(gameState.communityCards);
+                    const { score } = evaluate7Cards(cards);
+                    p.score = score;
+                    p.handName = describeHand(score);
+
+                    if (!bestScore || compareScores(score, bestScore) > 0) {
+                        bestScore = score;
+                        winnerIds = new Set([p.id]);
+                    } else if (compareScores(score, bestScore) === 0) {
+                        winnerIds.add(p.id);
+                    }
+                }
+
+                // 对弃牌玩家做标记
+                for (const p of list) {
+                    if (p.folded) {
+                        p.handName = "已弃牌";
+                    } else if (!p.handName && p.holeCards && p.holeCards.length === 2) {
+                        // 没算到说明公共牌不足
+                        p.handName = "未完成摊牌";
+                    }
+                }
+            }
+
+            for (const p of list) {
+                const card = document.createElement("div");
+                card.className = "player";
+                if (p.folded) card.classList.add("folded");
+                if (isShowdown && winnerIds.has(p.id)) card.classList.add("winner");
+
+                const header = document.createElement("div");
+                header.className = "player-header";
+
+                const nameSpan = document.createElement("span");
+                nameSpan.textContent = p.isYou ? `${p.name}（你）` : p.name;
+
+                const statusSpan = document.createElement("span");
+                let status = "";
+                if (p.isHost) status += "房主 ";
+                status += p.ready ? "[已准备]" : "[未准备]";
+                if (p.folded && gameState.stage !== "idle") status += " 已弃牌";
+                statusSpan.textContent = status.trim();
+
+                header.appendChild(nameSpan);
+                header.appendChild(statusSpan);
+                card.appendChild(header);
+
+                const handDiv = document.createElement("div");
+                handDiv.className = "hand";
+
+                if (p.isYou || (isShowdown && p.holeCards && p.holeCards.length > 0)) {
+                    (p.holeCards || []).forEach((c) => handDiv.appendChild(createCardElement(c)));
+                } else {
+                    // 对手：摊牌前只显示 2 张牌背
+                    for (let i = 0; i < 2; i++) {
+                        handDiv.appendChild(createCardElement(null));
+                    }
+                }
+                card.appendChild(handDiv);
+
+                if (isShowdown) {
+                    const resDiv = document.createElement("div");
+                    resDiv.className = "result";
+                    let text = "";
+                    if (p.folded) {
+                        text = "已弃牌";
+                    } else if (p.holeCards && p.holeCards.length === 2) {
+                        text = "牌型：" + (p.handName || "未知");
+                    } else {
+                        text = "未参与本局";
+                    }
+                    resDiv.textContent = text;
+                    card.appendChild(resDiv);
+                }
+
+                container.appendChild(card);
+            }
+        }
+
+        function renderStatus() {
+            const s = gameState;
+            stageText.textContent = "阶段：" + (STAGE_LABELS[s.stage] || s.stage);
+            playerCountText.textContent = "当前玩家数：" + (s.playerCount || 0);
+
+            if (!s.you) {
+                hostHint.textContent = "你还没有加入房间，请先填写昵称并点击“加入房间”。";
+            } else if (s.you.isHost) {
+                hostHint.textContent = "你是房主，可以控制“下一阶段”和“重置牌局”。";
+            } else {
+                const host = s.you.isHost
+                    ? s.you
+                    : (s.others || []).find((p) => p.isHost);
+                hostHint.textContent = host
+                    ? "房主：" + host.name
+                    : "暂无房主（等待其他人进入）。";
+            }
+
+            // 按钮状态
+            joinBtn.disabled = hasJoined;
+            nameInput.disabled = hasJoined;
+
+            if (!s.you) {
+                readyBtn.disabled = true;
+                foldBtn.disabled = true;
+                nextStageBtn.disabled = true;
+                resetBtn.disabled = true;
+            } else {
+                // 准备只在 idle 阶段有意义
+                readyBtn.disabled = s.stage !== "idle";
+                readyBtn.textContent = s.you.ready ? "取消准备" : "准备";
+
+                // 弃牌：游戏中、没弃牌
+                foldBtn.disabled =
+                    s.stage === "idle" || s.stage === "showdown" || s.you.folded;
+
+                // 下一阶段：房主可控，其他人禁用
+                nextStageBtn.disabled = !s.you.isHost;
+                nextStageBtn.textContent =
+                    s.stage === "idle" ? "尝试开始（需全部准备）" : "下一阶段";
+
+                // 重置：只有房主能按
+                resetBtn.disabled = !s.you.isHost;
+            }
+        }
+
+        function renderAll() {
+            renderCommunity();
+            renderPlayers();
+            renderStatus();
+        }
+
+        // ====== 事件绑定 ======
+        joinBtn.addEventListener("click", () => {
+            const name = nameInput.value.trim();
+            socket.emit("join", { name });
+            hasJoined = true;
+        });
+
+        readyBtn.addEventListener("click", () => {
+            if (!gameState.you) return;
+            socket.emit("setReady", !gameState.you.ready);
+        });
+
+        foldBtn.addEventListener("click", () => {
+            socket.emit("fold");
+        });
+
+        nextStageBtn.addEventListener("click", () => {
+            socket.emit("nextStage");
+        });
+
+        resetBtn.addEventListener("click", () => {
+            socket.emit("resetGame");
+        });
+
+        // ====== Socket 事件 ======
+        socket.on("connect", () => {
+            statusText.textContent = "已连接服务器";
+        });
+
+        socket.on("disconnect", () => {
+            statusText.textContent = "已断开服务器";
+            gameState = {
+                stage: "idle",
+                communityCards: [],
+                hostId: null,
+                playerCount: 0,
+                you: null,
+                others: [],
+            };
+            renderAll();
+        });
+
+        socket.on("state", (data) => {
+            gameState = data;
+            renderAll();
+        });
+
+        socket.on("message", (msg) => {
+            appendLog(msg);
+        });
+
+        // 初始渲染
+        renderAll();
+    </script>
+</body>
+
+</html>
