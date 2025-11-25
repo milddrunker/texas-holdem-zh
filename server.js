@@ -20,6 +20,7 @@ let hostId = null;          // 房主 socket.id
 let deck = [];
 let communityCards = [];
 let stage = 'idle';         // idle, preflop, flop, turn, river, showdown
+let pot = 0;
 
 function createDeck() {
     const d = [];
@@ -62,6 +63,8 @@ function broadcastState() {
                 folded: self.folded,
                 holeCards: self.holeCards,     // 自己永远能看到自己的底牌
                 isHost: id === hostId,
+                stack: self.stack || 0,
+                bet: self.bet || 0,
             }
             : null;
 
@@ -75,6 +78,8 @@ function broadcastState() {
                 isHost: pid === hostId,
                 // 在摊牌阶段之前不把对手的底牌发给前端
                 holeCards: showdown ? p.holeCards : [],
+                stack: p.stack || 0,
+                bet: p.bet || 0,
             }));
 
         socket.emit('state', {
@@ -84,6 +89,7 @@ function broadcastState() {
             playerCount,
             you,
             others,
+            pot,
         });
     });
 }
@@ -101,10 +107,13 @@ function startGameIfReady() {
     shuffle(deck);
     communityCards = [];
     stage = 'preflop';
+    pot = 0;
 
     for (const p of ps) {
         p.holeCards = [deck.pop(), deck.pop()];
         p.folded = false;
+        p.stack = 1000;
+        p.bet = 0;
     }
 
     broadcastMessage(`人数 ${ps.length}，全部已准备，开始发底牌！`);
@@ -133,6 +142,7 @@ function nextStage() {
     } else {
         return;
     }
+    Object.values(players).forEach((p) => { if (p) p.bet = 0; });
     broadcastState();
 }
 
@@ -142,10 +152,13 @@ function resetGame() {
         p.ready = false;
         p.holeCards = [];
         p.folded = false;
+        p.stack = 1000;
+        p.bet = 0;
     }
     deck = [];
     communityCards = [];
     stage = 'idle';
+    pot = 0;
     broadcastMessage('牌局已重置，大家可以重新准备。');
     broadcastState();
 }
@@ -208,6 +221,45 @@ io.on('connection', (socket) => {
     socket.on('resetGame', () => {
         if (socket.id !== hostId) return;
         resetGame();
+    });
+
+    socket.on('bet', (amount) => {
+        const p = players[socket.id];
+        if (!p) return;
+        if (stage === 'idle' || stage === 'showdown') return;
+        const a = Math.floor(Number(amount) || 0);
+        if (a <= 0) return;
+        if (p.stack < a) return;
+        p.stack -= a;
+        p.bet = (p.bet || 0) + a;
+        pot += a;
+        broadcastMessage(`「${p.name}」下注 ${a}。`);
+        broadcastState();
+    });
+
+    socket.on('call', () => {
+        const p = players[socket.id];
+        if (!p) return;
+        if (stage === 'idle' || stage === 'showdown') return;
+        const maxBet = Math.max(0, ...Object.values(players).map((x) => x.bet || 0));
+        const need = Math.max(0, maxBet - (p.bet || 0));
+        if (need <= 0) return;
+        if (p.stack < need) return;
+        p.stack -= need;
+        p.bet = (p.bet || 0) + need;
+        pot += need;
+        broadcastMessage(`「${p.name}」跟注 ${need}。`);
+        broadcastState();
+    });
+
+    socket.on('check', () => {
+        const p = players[socket.id];
+        if (!p) return;
+        if (stage === 'idle' || stage === 'showdown') return;
+        const maxBet = Math.max(0, ...Object.values(players).map((x) => x.bet || 0));
+        if ((p.bet || 0) !== maxBet) return;
+        broadcastMessage(`「${p.name}」过牌。`);
+        broadcastState();
     });
 
     socket.on('disconnect', () => {
