@@ -256,6 +256,13 @@ io.on('connection', (socket) => {
             const usedSeats = new Set(Object.values(players).map((p) => p.id));
             let nextSeat = 1;
             while (usedSeats.has(nextSeat)) nextSeat++;
+            if (stage !== 'idle' && dealerSeat != null) {
+                let preferred = null;
+                for (let s = dealerSeat - 1; s >= 1; s--) {
+                    if (!usedSeats.has(s)) { preferred = s; break; }
+                }
+                if (preferred != null) nextSeat = preferred;
+            }
             players[socket.id] = {
                 id: nextSeat,
                 name: name,
@@ -407,10 +414,18 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         const p = players[socket.id];
-        delete players[socket.id];
         if (p) {
-            broadcastMessage(`「${p.name}」断开连接。`);
+            if (stage !== 'idle' && p.inHand) {
+                p.folded = true;
+                p.inHand = false;
+                p.actedThisRound = true;
+                broadcastMessage(`「${p.name}」断开连接，视为弃牌。`);
+                advanceTurn();
+            } else {
+                broadcastMessage(`「${p.name}」断开连接。`);
+            }
         }
+        delete players[socket.id];
         if (hostId === socket.id) {
             const ids = Object.keys(players);
             hostId = ids[0] || null;
@@ -636,4 +651,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log('Server listening on port', PORT);
 });
-
