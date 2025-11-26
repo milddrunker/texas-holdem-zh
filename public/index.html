@@ -116,6 +116,11 @@
             box-shadow: 0 0 10px rgba(241, 196, 15, 0.6);
         }
 
+        .player.active-turn {
+            border-color: #3498db;
+            box-shadow: 0 0 10px rgba(52, 152, 219, 0.7);
+        }
+
         .player-header {
             display: flex;
             justify-content: space-between;
@@ -183,7 +188,7 @@
 
 <body>
     <div class="app">
-        <h1>多人德州扑克 Demo</h1>
+        <h1>多人德州扑克</h1>
 
         <section id="controlPanel">
             <div class="row">
@@ -194,13 +199,21 @@
                 <button id="joinBtn">加入房间</button>
                 <button id="readyBtn" disabled>准备</button>
                 <button id="foldBtn" disabled>弃牌</button>
-                <button id="nextStageBtn" disabled>下一阶段</button>
+                <button id="startNextBtn" disabled>开启下一局</button>
                 <button id="resetBtn" disabled>重置牌局</button>
+
+            </div>
+            <div class="row">
                 <label>
                     下注：
                     <input id="betInput" type="number" min="1" style="width:80px" />
                 </label>
                 <button id="betBtn" disabled>下注</button>
+                <label>
+                    加注到：
+                    <input id="raiseInput" type="number" min="1" style="width:90px" />
+                </label>
+                <button id="raiseBtn" disabled>加注</button>
                 <button id="callBtn" disabled>跟注</button>
                 <button id="checkBtn" disabled>过牌</button>
             </div>
@@ -210,6 +223,11 @@
                 <span id="playerCountText">当前玩家数：0</span>
                 <span id="hostHint"></span>
                 <span id="potText"></span>
+                <span id="maxBetText"></span>
+                <span id="needCallText"></span>
+                <span id="minBetText"></span>
+                <span id="minRaiseText"></span>
+
             </div>
         </section>
 
@@ -255,13 +273,20 @@
         const joinBtn = document.getElementById("joinBtn");
         const readyBtn = document.getElementById("readyBtn");
         const foldBtn = document.getElementById("foldBtn");
-        const nextStageBtn = document.getElementById("nextStageBtn");
+        const startNextBtn = document.getElementById("startNextBtn");
         const resetBtn = document.getElementById("resetBtn");
         const betInput = document.getElementById("betInput");
         const betBtn = document.getElementById("betBtn");
+        const raiseInput = document.getElementById("raiseInput");
+        const raiseBtn = document.getElementById("raiseBtn");
         const callBtn = document.getElementById("callBtn");
         const checkBtn = document.getElementById("checkBtn");
         const potText = document.getElementById("potText");
+        const maxBetText = document.getElementById("maxBetText");
+        const needCallText = document.getElementById("needCallText");
+        const minBetText = document.getElementById("minBetText");
+        const minRaiseText = document.getElementById("minRaiseText");
+
 
         let gameState = {
             stage: "idle",
@@ -270,10 +295,19 @@
             playerCount: 0,
             you: null,
             others: [],
-            pot: 0,
+            pots: [],
+            dealerSeat: null,
+            sbSeat: null,
+            bbSeat: null,
+            currentMaxBet: 0,
+            minBet: 20,
+            minRaiseInc: 20,
+            currentTurnId: null,
+
         };
 
         let hasJoined = false;
+        let mySocketId = null;
 
         // ====== 辅助函数：牌显示 & 牌型评估 ======
         function createCardElement(card) {
@@ -528,6 +562,7 @@
             for (const p of list) {
                 const card = document.createElement("div");
                 card.className = "player";
+                if (p.isCurrentTurn) card.classList.add("active-turn");
                 if (p.folded) card.classList.add("folded");
                 if (isShowdown && winnerIds.has(p.id)) card.classList.add("winner");
 
@@ -540,8 +575,12 @@
                 const statusSpan = document.createElement("span");
                 let status = "";
                 if (p.isHost) status += "房主 ";
+                if (p.id === gameState.dealerSeat) status += "[庄] ";
+                if (p.id === gameState.sbSeat) status += "[小盲] ";
+                if (p.id === gameState.bbSeat) status += "[大盲] ";
                 status += p.ready ? "[已准备]" : "[未准备]";
                 if (p.folded && gameState.stage !== "idle") status += " 已弃牌";
+                if (p.isCurrentTurn) status += " ← 当前行动";
                 statusSpan.textContent = status.trim();
 
                 header.appendChild(nameSpan);
@@ -550,7 +589,10 @@
 
                 const chipsDiv = document.createElement("div");
                 chipsDiv.style.fontSize = "12px";
-                chipsDiv.textContent = `筹码：${p.stack ?? 0}，本轮下注：${p.bet ?? 0}`;
+                const ledger = p.ledger ?? 0;
+                const cb = p.currentBet ?? 0;
+                const tc = p.totalCommitted ?? 0;
+                chipsDiv.textContent = `盈亏：${ledger}，本轮：${cb}，已投入：${tc}`;
                 card.appendChild(chipsDiv);
 
                 const handDiv = document.createElement("div");
@@ -589,12 +631,14 @@
             const s = gameState;
             stageText.textContent = "阶段：" + (STAGE_LABELS[s.stage] || s.stage);
             playerCountText.textContent = "当前玩家数：" + (s.playerCount || 0);
-            potText.textContent = "底池：" + (s.pot || 0);
+            const totalPot = (s.pots || []).reduce((x, y) => x + (y.amount || 0), 0);
+            potText.textContent = "底池：" + totalPot;
+            maxBetText.textContent = "最高下注：" + (s.currentMaxBet || 0);
 
             if (!s.you) {
                 hostHint.textContent = "你还没有加入房间，请先填写昵称并点击“加入房间”。";
             } else if (s.you.isHost) {
-                hostHint.textContent = "你是房主，可以控制“下一阶段”和“重置牌局”。";
+                hostHint.textContent = "你是房主，可以控制“开启下一局”和“重置牌局”。";
             } else {
                 const host = s.you.isHost
                     ? s.you
@@ -611,12 +655,14 @@
             if (!s.you) {
                 readyBtn.disabled = true;
                 foldBtn.disabled = true;
-                nextStageBtn.disabled = true;
+                startNextBtn.disabled = true;
                 resetBtn.disabled = true;
                 betBtn.disabled = true;
                 callBtn.disabled = true;
                 checkBtn.disabled = true;
                 betInput.disabled = true;
+                raiseBtn.disabled = true;
+                raiseInput.disabled = true;
             } else {
                 // 准备只在 idle 阶段有意义
                 readyBtn.disabled = s.stage !== "idle";
@@ -627,23 +673,32 @@
                     s.stage === "idle" || s.stage === "showdown" || s.you.folded;
 
                 // 下一阶段：房主可控，其他人禁用
-                nextStageBtn.disabled = !s.you.isHost;
-                nextStageBtn.textContent =
-                    s.stage === "idle" ? "尝试开始（需全部准备）" : "下一阶段";
+                startNextBtn.disabled = !s.you.isHost;
+                startNextBtn.textContent = "开启下一局";
 
                 // 重置：只有房主能按
                 resetBtn.disabled = !s.you.isHost;
 
-                const inPlay = s.stage !== "idle" && s.stage !== "showdown" && !s.you.folded;
+                const inPlay = s.stage !== "idle" && s.stage !== "showdown" && !s.you.folded && s.you.inHand !== false;
+                const isYourTurn = s.currentTurnId && mySocketId && s.currentTurnId === mySocketId;
                 betInput.disabled = !inPlay;
-                betBtn.disabled = !inPlay;
-                const maxBet = Math.max(0, ...(s.others || []).concat(s.you ? [s.you] : []).map((p) => p.bet || 0));
-                const youBet = s.you.bet || 0;
-                const canCall = inPlay && maxBet > youBet && (s.you.stack || 0) >= (maxBet - youBet);
-                const canCheck = inPlay && maxBet === youBet;
+                const maxBet = s.currentMaxBet || 0;
+                const youBet = s.you.currentBet || 0;
+                const need = Math.max(0, maxBet - youBet);
+                needCallText.textContent = "需补齐：" + need;
+                minBetText.textContent = "最小下注：" + (s.minBet || 0);
+                minRaiseText.textContent = "最小加注增量：" + (s.minRaiseInc || 0);
+                const canBet = inPlay && isYourTurn && maxBet === 0;
+                const canRaise = inPlay && isYourTurn && maxBet > 0;
+                const canCall = inPlay && isYourTurn && need > 0;
+                const canCheck = inPlay && isYourTurn && need === 0;
+                betBtn.disabled = !canBet;
+                raiseInput.disabled = !canRaise;
+                raiseBtn.disabled = !canRaise;
                 callBtn.disabled = !canCall;
                 checkBtn.disabled = !canCheck;
             }
+
         }
 
         function renderAll() {
@@ -668,8 +723,8 @@
             socket.emit("fold");
         });
 
-        nextStageBtn.addEventListener("click", () => {
-            socket.emit("nextStage");
+        startNextBtn.addEventListener("click", () => {
+            socket.emit("startNextHand");
         });
 
         resetBtn.addEventListener("click", () => {
@@ -679,6 +734,11 @@
         betBtn.addEventListener("click", () => {
             const v = Math.floor(Number(betInput.value) || 0);
             socket.emit("bet", v);
+        });
+
+        raiseBtn.addEventListener("click", () => {
+            const v = Math.floor(Number(raiseInput.value) || 0);
+            socket.emit("raise", v);
         });
 
         callBtn.addEventListener("click", () => {
@@ -692,6 +752,7 @@
         // ====== Socket 事件 ======
         socket.on("connect", () => {
             statusText.textContent = "已连接服务器";
+            mySocketId = socket.id;
         });
 
         socket.on("disconnect", () => {
@@ -715,6 +776,10 @@
 
         socket.on("message", (msg) => {
             appendLog(msg);
+        });
+
+        socket.on("actionError", (msg) => {
+            alert(msg);
         });
 
         // 初始渲染
