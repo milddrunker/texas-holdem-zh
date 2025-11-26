@@ -383,7 +383,8 @@ io.on('connection', (socket) => {
         const needToCall = Math.max(0, currentMaxBet - (p.currentBet || 0));
         const inc = a - needToCall;
         if (needToCall < 0) { sendError(socket, '数值错误'); return; }
-        if (currentMaxBet > 0 && a < currentMaxBet + minRaiseInc) { sendError(socket, `最小加注到 ${currentMaxBet + minRaiseInc}`); return; }
+        const finalBet = (p.currentBet || 0) + a;
+        if (currentMaxBet > 0 && finalBet < currentMaxBet + minRaiseInc) { sendError(socket, `最小加注到 ${currentMaxBet + minRaiseInc}`); return; }
         if (currentMaxBet === 0 && a < minBet) { sendError(socket, `最小下注为 ${minBet}`); return; }
         p.currentBet += a;
         p.totalCommitted += a;
