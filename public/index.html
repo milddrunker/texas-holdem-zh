@@ -200,8 +200,7 @@
                 <button id="readyBtn" disabled>准备</button>
                 <button id="foldBtn" disabled>弃牌</button>
                 <button id="startNextBtn" disabled>开启下一局</button>
-                
-
+                <button id="resetBtn" disabled>重置牌局</button>
             </div>
             <div class="row">
                 <label>
@@ -210,7 +209,7 @@
                 </label>
                 <button id="betBtn" disabled>下注</button>
                 <label>
-                    加注到：
+                    加注：
                     <input id="raiseInput" type="number" min="1" style="width:90px" />
                 </label>
                 <button id="raiseBtn" disabled>加注</button>
@@ -274,7 +273,8 @@
         const readyBtn = document.getElementById("readyBtn");
         const foldBtn = document.getElementById("foldBtn");
         const startNextBtn = document.getElementById("startNextBtn");
-        
+        const resetBtn = document.getElementById("resetBtn");
+
         const betInput = document.getElementById("betInput");
         const betBtn = document.getElementById("betBtn");
         const raiseInput = document.getElementById("raiseInput");
@@ -638,7 +638,7 @@
             if (!s.you) {
                 hostHint.textContent = "你还没有加入房间，请先填写昵称并点击“加入房间”。";
             } else if (s.you.isHost) {
-                hostHint.textContent = "你是房主，可以控制“开启下一局”。";
+                hostHint.textContent = "你是房主，可以控制“开启下一局”和“重置牌局”。";
             } else {
                 const host = s.you.isHost
                     ? s.you
@@ -656,6 +656,7 @@
                 readyBtn.disabled = true;
                 foldBtn.disabled = true;
                 startNextBtn.disabled = true;
+                resetBtn.disabled = true;
                 betBtn.disabled = true;
                 callBtn.disabled = true;
                 checkBtn.disabled = true;
@@ -666,16 +667,18 @@
                 // 准备只在 idle 阶段有意义
                 readyBtn.disabled = s.stage !== "idle";
                 readyBtn.textContent = s.you.ready ? "取消准备" : "准备";
-
+                resetBtn.disabled = !s.you.isHost;
                 // 弃牌：游戏中、没弃牌
                 foldBtn.disabled =
                     s.stage === "idle" || s.stage === "showdown" || s.you.folded;
-
+                resetBtn.addEventListener("click", () => {
+                    socket.emit("resetGame");
+                });
                 // 下一阶段：房主可控，其他人禁用
                 startNextBtn.disabled = !s.you.isHost;
                 startNextBtn.textContent = "开启下一局";
 
-                
+
 
                 const inPlay = s.stage !== "idle" && s.stage !== "showdown" && !s.you.folded && s.you.inHand !== false;
                 const isYourTurn = s.currentTurnId && mySocketId && s.currentTurnId === mySocketId;
@@ -725,7 +728,7 @@
             socket.emit("startNextHand");
         });
 
-        
+
 
         betBtn.addEventListener("click", () => {
             const v = Math.floor(Number(betInput.value) || 0);

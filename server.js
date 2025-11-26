@@ -168,7 +168,7 @@ function startGameIfReady() {
     currentMaxBet = bb;
     minBet = bb;
     minRaiseInc = bb;
-    lastAggressorSeat = bbSeat;
+    lastAggressorSeat = null;
     pots = [{ amount: sb + bb, eligibleSeats: ordered.filter((p) => p.inHand && !p.folded).map((p) => p.id) }];
 
     const firstTurnSeat = ordered[(dIdx + 3) % ordered.length].id;
@@ -222,6 +222,8 @@ function resetGame() {
         p.inHand = false;
         p.currentBet = 0;
         p.totalCommitted = 0;
+        p.actedThisRound = false;
+        p.ledger = 0;
     }
     deck = [];
     communityCards = [];
@@ -322,6 +324,7 @@ io.on('connection', (socket) => {
         broadcastMessage(`「${p.name}」选择弃牌。`);
         broadcastState();
     });
+
 
     socket.on('resetGame', () => {
         if (socket.id !== hostId) return;
@@ -435,31 +438,89 @@ function updatePots() {
 }
 
 function advanceTurn(resetAggressor) {
-    const actives = Object.entries(players)
-        .filter(([, p]) => p.inHand && !p.folded)
+    // 1. 所有本局起手拿到牌的人（包括已经弃牌的）
+    const inHandEntries = Object.entries(players)
+        .filter(([, p]) => p.inHand)
         .sort((a, b) => a[1].id - b[1].id);
-    if (actives.length <= 1) { stage = 'showdown'; distributePayouts(); broadcastState(); return; }
-    const ids = actives.map(([id]) => id);
-    let idx = ids.indexOf(currentTurnId);
-    let nextIdx = (idx + 1) % ids.length;
-    currentTurnId = ids[nextIdx];
-    if (resetAggressor) {
-        for (const [, p] of actives) p.actedThisRound = false;
+
+    // 还在牌局且没弃牌的玩家
+    const activeEntries = inHandEntries.filter(([, p]) => !p.folded);
+
+    // 如果只剩 0 或 1 个“未弃牌”的玩家，直接摊牌结算
+    if (activeEntries.length <= 1) {
+        stage = 'showdown';
+        distributePayouts();
+        broadcastState();
+        return;
     }
-    if (isRoundComplete()) { nextStage(); return; }
+
+    const ids = inHandEntries.map(([id]) => id);
+
+    // 2. 找到当前行动玩家在“整桌顺位”中的位置
+    let idx = ids.indexOf(currentTurnId);
+
+    if (idx === -1) {
+        const prevSeat = players[currentTurnId]?.id;
+        const seatIds = activeEntries.map(([, p]) => p.id);
+        let pos = -1;
+        if (prevSeat != null) {
+            for (let i = 0; i < seatIds.length; i++) {
+                if (seatIds[i] > prevSeat) { pos = i; break; }
+            }
+        }
+        const targetSeat = seatIds[pos >= 0 ? pos : 0];
+        const entry = activeEntries.find(([, p]) => p.id === targetSeat);
+        currentTurnId = entry ? entry[0] : activeEntries[0][0];
+        if (resetAggressor) {
+            for (const [, p] of activeEntries) p.actedThisRound = false;
+        }
+        if (isRoundComplete()) { nextStage(); return; }
+        broadcastState();
+        return;
+    }
+
+    // 3. 顺时针找下一个“未弃牌”的玩家
+    const len = ids.length;
+    let nextIdx = (idx + 1) % len;
+    let loops = 0;
+    while (loops < len) {
+        const nextId = ids[nextIdx];
+        const p = players[nextId];
+        if (p && p.inHand && !p.folded) {
+            currentTurnId = nextId;
+            break;
+        }
+        nextIdx = (nextIdx + 1) % len;
+        loops++;
+    }
+
+    // 如果重置进攻者，需要把大家的 actedThisRound 清空
+    if (resetAggressor) {
+        for (const [, p] of activeEntries) p.actedThisRound = false;
+    }
+
+    // 4. 如果这一轮下注已经结束，进入下一阶段，否则更新状态
+    if (isRoundComplete()) {
+        nextStage();
+        return;
+    }
     broadcastState();
 }
+
 
 function isRoundComplete() {
     const actives = Object.values(players).filter((p) => p.inHand && !p.folded);
     if (!actives.length) return true;
     const allEqual = actives.every((p) => (p.currentBet || 0) === currentMaxBet);
     if (!allEqual) return false;
+    if (stage === 'preflop' && lastAggressorSeat == null) {
+        return actives.every((p) => p.id === bbSeat || p.actedThisRound);
+    }
     const lastAggressorIndex = actives.findIndex((p) => p.id === lastAggressorSeat);
-    if (lastAggressorIndex < 0) return actives.every((p) => p.actedThisRound);
-    const ids = actives.map((p) => p.id);
-    const turnIndex = ids.indexOf(players[currentTurnId]?.id);
-    return actives.every((p) => p.actedThisRound);
+    if (lastAggressorIndex < 0) {
+        return actives.every((p) => p.actedThisRound);
+    }
+    return actives.every((p) => p.id === lastAggressorSeat || p.actedThisRound);
 }
 
 function distributePayouts() {
