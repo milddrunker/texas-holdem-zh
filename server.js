@@ -203,6 +203,7 @@ function nextStage() {
         return;
     }
     Object.values(players).forEach((p) => { if (p) { p.currentBet = 0; p.actedThisRound = false; } });
+    lastAggressorSeat = null;
     const actives = Object.values(players).filter((p) => p.inHand && !p.folded).sort((a, b) => a.id - b.id);
     const dIdx = actives.findIndex((p) => p.id === dealerSeat);
     const startSeat = stage === 'preflop' ? actives[(dIdx + 3) % actives.length].id : actives[(dIdx + 1) % actives.length].id;
@@ -223,7 +224,7 @@ function resetGame() {
         p.currentBet = 0;
         p.totalCommitted = 0;
         p.actedThisRound = false;
-        p.ledger = 0;
+
     }
     deck = [];
     communityCards = [];
@@ -327,6 +328,7 @@ io.on('connection', (socket) => {
         p.folded = true;
         p.inHand = false;
         p.actedThisRound = true;
+        updatePots();
         advanceTurn();
         broadcastMessage(`「${p.name}」选择弃牌。`);
         broadcastState();
@@ -447,9 +449,10 @@ function sendError(socket, msg) {
 }
 
 function updatePots() {
-    const actives = Object.values(players).filter((p) => p.inHand);
-    const total = actives.reduce((s, p) => s + (p.totalCommitted || 0), 0);
-    pots = [{ amount: total, eligibleSeats: actives.filter((p) => !p.folded).map((p) => p.id) }];
+    const committed = Object.values(players).filter((p) => (p.totalCommitted || 0) > 0);
+    const total = committed.reduce((s, p) => s + (p.totalCommitted || 0), 0);
+    const eligibleSeats = Object.values(players).filter((p) => p.inHand && !p.folded).map((p) => p.id);
+    pots = [{ amount: total, eligibleSeats }];
 }
 
 function advanceTurn(resetAggressor) {
@@ -541,15 +544,29 @@ function isRoundComplete() {
 function distributePayouts() {
     const showdownPlayers = Object.values(players).filter((p) => p.totalCommitted > 0);
     if (!showdownPlayers.length) return;
-    const evaluated = showdownPlayers.filter((p) => Array.isArray(p.holeCards) && p.holeCards.length === 2).map((p) => ({ p, cards: p.holeCards.concat(communityCards) }));
+    const evaluated = showdownPlayers
+        .filter((p) => Array.isArray(p.holeCards) && p.holeCards.length === 2)
+        .map((p) => ({ p, cards: p.holeCards.concat(communityCards) }));
     const scores = evaluated.map(({ p, cards }) => ({ p, data: evaluate7(cards) }));
-    const winners = pickWinners(scores, showdownPlayers.filter((p) => !p.folded));
-    const total = pots.reduce((s, pot) => s + (pot.amount || 0), 0);
-    if (!winners.length) return;
-    const share = Math.round(total / winners.length);
-    for (const w of winners) w.ledgerGain = share;
+
+    const gainMap = new Map();
+    for (const pot of pots) {
+        const elig = showdownPlayers.filter((p) => pot.eligibleSeats.includes(p.id) && !p.folded);
+        if (!elig.length) continue;
+        const winners = pickWinners(scores, elig);
+        if (!winners.length) continue;
+        const amount = pot.amount || 0;
+        const base = Math.floor(amount / winners.length);
+        const remainder = amount - base * winners.length;
+        const ordered = winners.slice().sort((a, b) => a.id - b.id);
+        ordered.forEach((w, idx) => {
+            const extra = idx < remainder ? 1 : 0;
+            gainMap.set(w.id, (gainMap.get(w.id) || 0) + base + extra);
+        });
+    }
+
     for (const p of showdownPlayers) {
-        const gain = winners.some((w) => w.id === p.id) ? share : 0;
+        const gain = gainMap.get(p.id) || 0;
         const loss = p.totalCommitted || 0;
         p.ledger = (p.ledger || 0) + gain - loss;
     }
